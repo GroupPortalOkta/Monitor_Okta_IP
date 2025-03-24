@@ -1,0 +1,49 @@
+name: Monitor Okta IP
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 매일 자정(UTC)에 자동 실행
+  workflow_dispatch:  # 수동 실행도 허용
+
+jobs:
+  update-ip-ranges:
+    runs-on: ubuntu-latest # 최신 버전의 Ubuntu 가상 머신에서 실행
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Download latest IP ranges
+        run: |
+          curl -s https://s3.amazonaws.com/okta-ip-ranges/ip_ranges.json -o latest.json
+          DATE=$(date +"%Y-%m-%d")
+          mv latest.json "okta-ip-ranges/$DATE.json"
+
+      - name: Compare with previous day
+        run: |
+          mkdir -p okta-ip-ranges
+          DATE=$(date +"%Y-%m-%d")
+          YESTERDAY=$(date -d "yesterday" +"%Y-%m-%d")
+
+          if [ -f "okta-ip-ranges/$YESTERDAY.json" ]; then
+            # Extract IPs from JSON files
+            jq -r '..|objects|.ip_ranges?|select(.)[]' "okta-ip-ranges/$YESTERDAY.json" | sort > yesterday_ips.txt
+            jq -r '..|objects|.ip_ranges?|select(.)[]' "okta-ip-ranges/$DATE.json" | sort > today_ips.txt
+
+            # Find added and removed IPs
+            comm -13 yesterday_ips.txt today_ips.txt > added_ips.txt
+            comm -23 yesterday_ips.txt today_ips.txt > removed_ips.txt
+
+            # Save results
+            echo -e "{\n  \"added\": $(jq -R . < added_ips.txt | jq -s .),\n  \"removed\": $(jq -R . < removed_ips.txt | jq -s .)\n}" > "okta-ip-ranges/diff-$DATE.json"
+          fi
+
+      - name: Commit and Push Changes
+        run: |
+          git add .
+          git commit -m "Update Okta IP Ranges - $DATE" || echo "No changes to commit"
+          git push origin main
